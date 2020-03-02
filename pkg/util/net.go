@@ -56,7 +56,7 @@ func LastSubnetIP(subnet string) (string, error) {
 	}
 	maskLength, _ := cidr.Mask.Size()
 	ipInt := Ip2BigInt(cidr.IP.String())
-	size :=  big.NewInt(0).Rsh(big.NewInt(2), length-uint(maskLength))
+	size :=  big.NewInt(0).Lsh(big.NewInt(1), length-uint(maskLength))
 	size = big.NewInt(0).Sub(size, big.NewInt(2))
 	return BigInt2Ip(ipInt.Add(ipInt, size)), nil
 }
