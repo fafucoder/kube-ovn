@@ -35,6 +35,7 @@ type Configuration struct {
 	NodeName              string
 	ServiceClusterIPRange string
 	NodeLocalDNSIP        string
+	EncapChecksum         bool
 	PprofPort             int
 }
 
@@ -50,7 +51,8 @@ func ParseFlags() (*Configuration, error) {
 		argOvsSocket             = pflag.String("ovs-socket", "", "The socket to local ovs-server")
 		argKubeConfigFile        = pflag.String("kubeconfig", "", "Path to kubeconfig file with authorization and master location information. If not set use the inCluster token.")
 		argServiceClusterIPRange = pflag.String("service-cluster-ip-range", "10.96.0.0/12", "The kubernetes service cluster ip range, default: 10.96.0.0/12")
-		argNodeLocalDnsIP        = pflag.String("node-local-dns-ip", "", "if use nodelocaldns the local dns server ip should be set here, default empty.")
+		argNodeLocalDnsIP        = pflag.String("node-local-dns-ip", "", "If use nodelocaldns the local dns server ip should be set here, default empty.")
+		argEncapChecksum         = pflag.Bool("encap-checksum", true, "Enable checksum, default: true")
 		argPprofPort             = pflag.Int("pprof-port", 10665, "The port to get profiling data, default: 10665")
 	)
 
@@ -91,6 +93,7 @@ func ParseFlags() (*Configuration, error) {
 		NodeName:              nodeName,
 		ServiceClusterIPRange: *argServiceClusterIPRange,
 		NodeLocalDNSIP:        *argNodeLocalDnsIP,
+		EncapChecksum:         *argEncapChecksum,
 	}
 
 	if err := config.initNicConfig(); err != nil {
@@ -121,6 +124,12 @@ func (config *Configuration) initNicConfig() error {
 	}
 	if config.MTU == 0 {
 		config.MTU = iface.MTU - util.GeneveHeaderLength
+	}
+
+	if !config.EncapChecksum {
+		if err := disableChecksum(); err != nil {
+			klog.Errorf("failed to set checksum offload, %v", err)
+		}
 	}
 
 	addrs, err := iface.Addrs()
@@ -198,6 +207,15 @@ func setEncapIP(ip string) error {
 		"ovs-vsctl", "set", "open", ".", fmt.Sprintf("external-ids:ovn-encap-ip=%s", ip)).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to set ovn-encap-ip, %s", string(raw))
+	}
+	return nil
+}
+
+func disableChecksum() error {
+	raw, err := exec.Command(
+		"ovs-vsctl", "set", "open", ".", "external-ids:ovn-encap-csum=false").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to set ovn-encap-csum, %s", string(raw))
 	}
 	return nil
 }

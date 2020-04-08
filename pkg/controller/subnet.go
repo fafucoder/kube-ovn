@@ -270,6 +270,10 @@ func formatSubnet(subnet *kubeovnv1.Subnet, c *Controller) error {
 		subnet.Spec.CIDRBlock = ipNet.String()
 		changed = true
 	}
+	if subnet.Spec.Provider == "" {
+		subnet.Spec.Provider = util.OvnProvider
+		changed = true
+	}
 	if subnet.Spec.Protocol == "" || subnet.Spec.Protocol != util.CheckProtocol(subnet.Spec.CIDRBlock) {
 		subnet.Spec.Protocol = util.CheckProtocol(subnet.Spec.CIDRBlock)
 		changed = true
@@ -350,6 +354,18 @@ func (c *Controller) handleAddSubnet(key string) error {
 		return err
 	}
 
+	if err := c.ipam.AddOrUpdateSubnet(subnet.Name, subnet.Spec.CIDRBlock, subnet.Spec.ExcludeIps); err != nil {
+		return err
+	}
+
+	if err := calcSubnetStatusIP(subnet, c); err != nil {
+		klog.Error("init subnet status failed", err)
+	}
+
+	if !isOvnSubnet(subnet) {
+		return nil
+	}
+
 	exist, err := c.ovnClient.LogicalSwitchExists(subnet.Name)
 	if err != nil {
 		klog.Errorf("failed to list logical switch, %v", err)
@@ -366,9 +382,6 @@ func (c *Controller) handleAddSubnet(key string) error {
 	}
 
 	if !exist {
-		if err := calcSubnetStatusIP(subnet, c); err != nil {
-			klog.Error("init subnet status failed", err)
-		}
 		subnet.Status.EnsureStandardConditions()
 		if err = util.ValidateSubnet(*subnet); err != nil {
 			klog.Error(err)
@@ -590,6 +603,18 @@ func (c *Controller) handleUpdateSubnet(key string) error {
 		return nil
 	}
 
+	if err := c.ipam.AddOrUpdateSubnet(subnet.Name, subnet.Spec.CIDRBlock, subnet.Spec.ExcludeIps); err != nil {
+		return err
+	}
+
+	if err := calcSubnetStatusIP(subnet, c); err != nil {
+		klog.Error("init subnet status failed", err)
+	}
+
+	if !isOvnSubnet(subnet) {
+		return nil
+	}
+
 	exist, err := c.ovnClient.LogicalSwitchExists(subnet.Name)
 	if err != nil {
 		klog.Errorf("failed to list logical switch, %v", err)
@@ -608,9 +633,6 @@ func (c *Controller) handleUpdateSubnet(key string) error {
 		return nil
 	}
 
-	if err := calcSubnetStatusIP(subnet, c); err != nil {
-		klog.Error("init subnet status failed", err)
-	}
 	if err = util.ValidateSubnet(*subnet); err != nil {
 		klog.Error(err)
 		subnet.TypeMeta.Kind = "Subnet"
@@ -726,6 +748,8 @@ func (c *Controller) handleDeleteRoute(key string) error {
 }
 
 func (c *Controller) handleDeleteSubnet(key string) error {
+	c.ipam.DeleteSubnet(key)
+
 	exist, err := c.ovnClient.LogicalSwitchExists(key)
 	if err != nil {
 		klog.Errorf("failed to list logical switch, %v", err)
@@ -827,7 +851,7 @@ func calcSubnetStatusIP(subnet *kubeovnv1.Subnet, c *Controller) error {
 		return err
 	}
 	podUsedIPs, err := c.config.KubeOvnClient.KubeovnV1().IPs().List(metav1.ListOptions{
-		LabelSelector: fields.OneTermEqualSelector(util.SubnetNameLabel, subnet.Name).String(),
+		LabelSelector: fields.OneTermEqualSelector(subnet.Name, "").String(),
 	})
 	if err != nil {
 		return err
@@ -847,4 +871,11 @@ func calcSubnetStatusIP(subnet *kubeovnv1.Subnet, c *Controller) error {
 	}
 	subnet, err = c.config.KubeOvnClient.KubeovnV1().Subnets().Patch(subnet.Name, types.MergePatchType, bytes, "status")
 	return err
+}
+
+func isOvnSubnet(subnet *kubeovnv1.Subnet) bool {
+	if subnet.Spec.Provider == util.OvnProvider || subnet.Spec.Provider == "" {
+		return true
+	}
+	return false
 }

@@ -100,6 +100,7 @@ func NewController(config *Configuration, informerFactory informers.SharedInform
 
 	subnetInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    controller.enqueueSubnet,
+		UpdateFunc: controller.enqueueUpdateSubnet,
 		DeleteFunc: controller.enqueueSubnet,
 	})
 	podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -113,6 +114,16 @@ func (c *Controller) enqueueSubnet(obj interface{}) {
 	var key string
 	var err error
 	if key, err = cache.MetaNamespaceKeyFunc(obj); err != nil {
+		utilruntime.HandleError(err)
+		return
+	}
+	c.subnetQueue.Add(key)
+}
+
+func (c *Controller) enqueueUpdateSubnet(old, new interface{}) {
+	var key string
+	var err error
+	if key, err = cache.MetaNamespaceKeyFunc(new); err != nil {
 		utilruntime.HandleError(err)
 		return
 	}
@@ -326,7 +337,7 @@ func (c *Controller) handlePod(key string) error {
 		c.recorder.Eventf(pod, v1.EventTypeWarning, "ValidatePodNetworkFailed", err.Error())
 		return err
 	}
-	return ovs.SetPodBandwidth(pod.Name, pod.Namespace, pod.Annotations[util.IngressRateAnnotation], pod.Annotations[util.EgressRateAnnotation])
+	return ovs.SetPodBandwidth(pod.Name, pod.Namespace, pod.Annotations[util.EgressRateAnnotation], pod.Annotations[util.IngressRateAnnotation])
 }
 
 // Run starts controller
@@ -353,7 +364,7 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 }
 
 func recompute() {
-	output, err := exec.Command("ovs-appctl", "-t", "ovn-controller", "recompute").CombinedOutput()
+	output, err := exec.Command("ovn-appctl", "-t", "ovn-controller", "recompute").CombinedOutput()
 	if err != nil {
 		klog.Errorf("failed to recompute ovn-controller %q", output)
 	}

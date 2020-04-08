@@ -39,7 +39,7 @@ spec:
       hostNetwork: true
       containers:
         - name: kube-ovn-controller
-          image: "index.alauda.cn/alaudak8s/kube-ovn:v1.1.0-pre"
+          image: "index.alauda.cn/alaudak8s/kube-ovn:v1.1.0"
           imagePullPolicy: IfNotPresent
           command:
           - /kube-ovn/start-controller.sh
@@ -75,7 +75,7 @@ spec:
             periodSeconds: 7
             failureThreshold: 5
       nodeSelector:
-        beta.kubernetes.io/os: "linux"
+        kubernetes.io/os: "linux"
 
 ---
 kind: DaemonSet
@@ -108,7 +108,7 @@ spec:
       hostPID: true
       initContainers:
       - name: install-cni
-        image: "index.alauda.cn/alaudak8s/kube-ovn:v1.1.0-pre"
+        image: "index.alauda.cn/alaudak8s/kube-ovn:v1.1.0"
         imagePullPolicy: IfNotPresent
         command: ["/kube-ovn/install-cni.sh"]
         securityContext:
@@ -121,7 +121,7 @@ spec:
             name: cni-bin
       containers:
       - name: cni-server
-        image: "index.alauda.cn/alaudak8s/kube-ovn:v1.1.0-pre"
+        image: "index.alauda.cn/alaudak8s/kube-ovn:v1.1.0"
         imagePullPolicy: IfNotPresent
         command:
           - sh
@@ -143,6 +143,8 @@ spec:
         volumeMounts:
           - mountPath: /run/openvswitch
             name: host-run-ovs
+          - mountPath: /run/ovn
+            name: host-run-ovn
           - mountPath: /var/run/netns
             name: host-ns
             mountPropagation: HostToContainer
@@ -167,11 +169,14 @@ spec:
           periodSeconds: 7
           failureThreshold: 5
       nodeSelector:
-        beta.kubernetes.io/os: "linux"
+        kubernetes.io/os: "linux"
       volumes:
         - name: host-run-ovs
           hostPath:
             path: /run/openvswitch
+        - name: host-run-ovn
+          hostPath:
+            path: /run/ovn
         - name: cni-conf
           hostPath:
             path: /etc/cni/net.d
@@ -211,7 +216,7 @@ spec:
       hostPID: true
       containers:
         - name: pinger
-          image: "index.alauda.cn/alaudak8s/kube-ovn:v1.1.0-pre"
+          image: "index.alauda.cn/alaudak8s/kube-ovn:v1.1.0"
           command: ["/kube-ovn/kube-ovn-pinger", "--external-address=114.114.114.114"]
           imagePullPolicy: IfNotPresent
           securityContext:
@@ -261,7 +266,7 @@ spec:
               cpu: 200m
               memory: 400Mi
       nodeSelector:
-        beta.kubernetes.io/os: "linux"
+        kubernetes.io/os: "linux"
       volumes:
         - name: host-modules
           hostPath:

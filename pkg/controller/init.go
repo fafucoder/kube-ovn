@@ -3,6 +3,7 @@ package controller
 import (
 	"fmt"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/labels"
 	"strings"
 
 	kubeovnv1 "github.com/alauda/kube-ovn/pkg/apis/kubeovn/v1"
@@ -49,6 +50,7 @@ func (c *Controller) initDefaultLogicalSwitch() error {
 		ObjectMeta: v1.ObjectMeta{Name: c.config.DefaultLogicalSwitch},
 		Spec: kubeovnv1.SubnetSpec{
 			Default:     true,
+			Provider:    util.OvnProvider,
 			CIDRBlock:   c.config.DefaultCIDR,
 			Gateway:     c.config.DefaultGateway,
 			ExcludeIps:  strings.Split(c.config.DefaultExcludeIps, ","),
@@ -77,6 +79,7 @@ func (c *Controller) initNodeSwitch() error {
 		ObjectMeta: v1.ObjectMeta{Name: c.config.NodeSwitch},
 		Spec: kubeovnv1.SubnetSpec{
 			Default:    false,
+			Provider:   util.OvnProvider,
 			CIDRBlock:  c.config.NodeSwitchCIDR,
 			Gateway:    c.config.NodeSwitchGateway,
 			ExcludeIps: []string{c.config.NodeSwitchGateway},
@@ -134,5 +137,57 @@ func (c *Controller) initLoadBalancer() error {
 	} else {
 		klog.Infof("udp load balancer %s exists", udpLb)
 	}
+	return nil
+}
+
+func (c *Controller) InitIPAM() error {
+	subnets, err := c.subnetsLister.List(labels.Everything())
+	if err != nil {
+		klog.Errorf("failed to list subnet, %v", err)
+		return err
+	}
+	for _, subnet := range subnets {
+		if err := c.ipam.AddOrUpdateSubnet(subnet.Name, subnet.Spec.CIDRBlock, subnet.Spec.ExcludeIps); err != nil {
+			klog.Errorf("failed to init subnet %s, %v", subnet.Name, err)
+		}
+	}
+
+	pods, err := c.podsLister.List(labels.Everything())
+	if err != nil {
+		klog.Errorf("failed to list pods, %v", err)
+		return err
+	}
+	for _, pod := range pods {
+		if isPodAlive(pod) &&
+			pod.Annotations[util.AllocatedAnnotation] == "true" &&
+			pod.Annotations[util.LogicalSwitchAnnotation] != "" {
+			_, _, err := c.ipam.GetStaticAddress(
+				fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+				pod.Annotations[util.IpAddressAnnotation],
+				pod.Annotations[util.MacAddressAnnotation],
+				pod.Annotations[util.LogicalSwitchAnnotation])
+			if err != nil {
+				klog.Errorf("failed to init pod %s.%s address %s, %v", pod.Name, pod.Namespace, pod.Annotations[util.IpAddressAnnotation], err)
+			}
+		}
+	}
+
+	nodes, err := c.nodesLister.List(labels.Everything())
+	if err != nil {
+		klog.Errorf("failed to list nodes, %v", err)
+		return err
+	}
+	for _, node := range nodes {
+		if node.Annotations[util.AllocatedAnnotation] == "true" {
+			portName := fmt.Sprintf("node-%s", node.Name)
+			_, _, err := c.ipam.GetStaticAddress(portName, node.Annotations[util.IpAddressAnnotation],
+				node.Annotations[util.MacAddressAnnotation],
+				node.Annotations[util.LogicalSwitchAnnotation])
+			if err != nil {
+				klog.Errorf("failed to init node %s.%s address %s, %v", node.Name, node.Namespace, node.Annotations[util.IpAddressAnnotation], err)
+			}
+		}
+	}
+
 	return nil
 }

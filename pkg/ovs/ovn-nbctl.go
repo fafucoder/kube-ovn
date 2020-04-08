@@ -16,7 +16,7 @@ import (
 
 func (c Client) ovnNbCommand(cmdArgs ...string) (string, error) {
 	start := time.Now()
-	cmdArgs = append([]string{fmt.Sprintf("--timeout=%d", c.OvnNbTimeout)}, cmdArgs...)
+	cmdArgs = append([]string{fmt.Sprintf("--timeout=%d", c.OvnTimeout)}, cmdArgs...)
 	raw, err := exec.Command(OvnNbCtl, cmdArgs...).CombinedOutput()
 	elapsed := float64((time.Since(start)) / time.Millisecond)
 	klog.Infof("%s command %s in %vms", OvnNbCtl, strings.Join(cmdArgs, " "), elapsed)
@@ -35,61 +35,20 @@ func (c Client) DeletePort(port string) error {
 }
 
 // CreatePort create logical switch port in ovn
-func (c Client) CreatePort(ls, port, ip, cidr, mac string) (*nic, error) {
-	if ip == "" && mac == "" {
-		_, err := c.ovnNbCommand(MayExist, "lsp-add", ls, port,
-			"--", "set", "logical_switch_port", port, "addresses=dynamic")
-		if err != nil {
-			klog.Errorf("create port %s failed %v", port, err)
-			return nil, err
-		}
-
-		address, err := c.GetLogicalSwitchPortDynamicAddress(port)
-		if err != nil {
-			klog.Errorf("get port %s dynamic-addresses failed %v", port, err)
-			return nil, err
-		}
-		mac, ip = address[0], address[1]
-	} else {
-		if mac == "" {
-			mac = "dynamic"
-		}
-
-		// remove mask, and retrieve mask from subnet cidr later
-		// in this way we can deal with static ip with/without mask
-		ip = strings.Split(ip, "/")[0]
-
-		_, err := c.ovnNbCommand(MayExist, "lsp-add", ls, port, "--",
-			"lsp-set-addresses", port, fmt.Sprintf("%s %s", mac, ip))
-		if err != nil {
-			klog.Errorf("create port %s failed %v", port, err)
-			return nil, err
-		}
-
-		if mac == "dynamic" {
-			address, err := c.GetLogicalSwitchPortDynamicAddress(port)
-			if err != nil {
-				klog.Errorf("get port %s dynamic-addresses failed %v", port, err)
-				return nil, err
-			}
-			mac = address[0]
-		}
-	}
+func (c Client) CreatePort(ls, port, ip, cidr, mac string) error {
+	ovnCommand := []string{MayExist, "lsp-add", ls, port, "--",
+		"lsp-set-addresses", port, fmt.Sprintf("%s %s", mac, ip), "--"}
 
 	if ls != c.NodeSwitch {
-		_, err := c.ovnNbCommand("lsp-set-port-security", port, fmt.Sprintf("%s %s/%s", mac, ip, strings.Split(cidr, "/")[1]))
-		if err != nil {
-			klog.Errorf("failed to set port security for %s, %v", port, err)
-			return nil, err
-		}
+		ovnCommand = append(ovnCommand,
+			"lsp-set-port-security", port, fmt.Sprintf("%s %s/%s", mac, ip, strings.Split(cidr, "/")[1]))
 	}
 
-	return &nic{IpAddress: ip, MacAddress: mac}, nil
-}
-
-type nic struct {
-	IpAddress  string
-	MacAddress string
+	if _, err := c.ovnNbCommand(ovnCommand...); err != nil {
+		klog.Errorf("create port %s failed %v", port, err)
+		return err
+	}
+	return nil
 }
 
 // CreateLogicalSwitch create logical switch in ovn, connect it to router and apply tcp/udp lb rules
@@ -249,6 +208,28 @@ func (c Client) createRouterPort(ls, lr, ip, mac string) error {
 	return nil
 }
 
+type StaticRoute struct {
+	Policy  string
+	CIDR    string
+	NextHop string
+}
+
+func (c Client) ListStaticRoute() ([]StaticRoute, error) {
+	output, err := c.ovnNbCommand("--format=csv", "--no-heading", "--data=bare", "--columns=ip_prefix,nexthop,policy", "list", "Logical_Router_Static_Route")
+	if err != nil {
+		return nil, err
+	}
+	entries := strings.Split(output, "\n")
+	staticRoutes := make([]StaticRoute, 0, len(entries))
+	for _, entry := range strings.Split(output, "\n") {
+		if len(strings.Split(entry, ",")) == 3 {
+			t := strings.Split(entry, ",")
+			staticRoutes = append(staticRoutes, StaticRoute{CIDR: t[0], NextHop: t[1], Policy: t[2]})
+		}
+	}
+	return staticRoutes, nil
+}
+
 // AddStaticRoute add a static route rule in ovn
 func (c Client) AddStaticRoute(policy, cidr, nextHop, router string) error {
 	if policy == "" {
@@ -272,6 +253,9 @@ func (c Client) DeleteStaticRouteByNextHop(nextHop string) error {
 	}
 	ipPrefixes := strings.Split(output, "\n")
 	for _, ipPre := range ipPrefixes {
+		if strings.TrimSpace(ipPre) == "" {
+			continue
+		}
 		if err := c.DeleteStaticRoute(ipPre, c.ClusterRouter); err != nil {
 			klog.Errorf("failed to delete route %s, %v", ipPre, err)
 			return err
@@ -284,6 +268,11 @@ func (c Client) DeleteStaticRouteByNextHop(nextHop string) error {
 func (c Client) FindLoadbalancer(lb string) (string, error) {
 	output, err := c.ovnNbCommand("--data=bare", "--no-heading", "--columns=_uuid",
 		"find", "load_balancer", fmt.Sprintf("name=%s", lb))
+	count := len(strings.Split(output, "/n"))
+	if count > 1 {
+		klog.Errorf("%s has %d lb entries", lb, count)
+		return "", fmt.Errorf("%s has %d lb entries", lb, count)
+	}
 	return output, err
 }
 
@@ -307,7 +296,17 @@ func (c Client) addLoadBalancerToLogicalSwitch(lb, ls string) error {
 
 // DeleteLoadBalancerVip delete a vip rule from loadbalancer
 func (c Client) DeleteLoadBalancerVip(vip, lb string) error {
-	existVips, err := c.GetLoadBalancerVips(lb)
+	lbUuid, err := c.FindLoadbalancer(lb)
+	if err != nil {
+		klog.Errorf("failed to get lb %v", err)
+		return err
+	}
+
+	existVips, err := c.GetLoadBalancerVips(lbUuid)
+	if err != nil {
+		klog.Errorf("failed to list lb %s vips, %v", lb, err)
+		return err
+	}
 	// vip is empty or delete last rule will destroy the loadbalancer
 	if vip == "" || len(existVips) == 1 {
 		return nil
@@ -350,15 +349,17 @@ func (c Client) ResetLogicalSwitchAcl(ls, protocol string) error {
 // SetPrivateLogicalSwitch will drop all ingress traffic except allow subnets
 func (c Client) SetPrivateLogicalSwitch(ls, protocol, cidr string, allow []string) error {
 	delArgs := []string{"acl-del", ls}
+	allowArgs := []string{}
 	var dropArgs []string
 	if protocol == kubeovnv1.ProtocolIPv4 {
 		dropArgs = []string{"--", "acl-add", ls, "to-lport", util.DefaultDropPriority, fmt.Sprintf(`ip4.src!=%s || ip4.dst!=%s`, cidr, cidr), "drop"}
+		allowArgs = append(allowArgs, "--", "acl-add", ls, "to-lport", util.NodeAllowPriority, fmt.Sprintf("ip4.src==%s", c.NodeSwitchCIDR), "allow-related")
 	} else {
 		dropArgs = []string{"--", "acl-add", ls, "to-lport", util.DefaultDropPriority, fmt.Sprintf(`ip6.src!=%s || ip6.dst!=%s`, cidr, cidr), "drop"}
+		allowArgs = append(allowArgs, "--", "acl-add", ls, "to-lport", util.NodeAllowPriority, fmt.Sprintf("ip6.src==%s", c.NodeSwitchCIDR), "allow-related")
 	}
 	ovnArgs := append(delArgs, dropArgs...)
 
-	allowArgs := []string{}
 	for _, subnet := range allow {
 		if strings.TrimSpace(subnet) != "" {
 			var match string

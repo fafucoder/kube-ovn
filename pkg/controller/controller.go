@@ -1,6 +1,7 @@
 package controller
 
 import (
+	ovnipam "github.com/alauda/kube-ovn/pkg/ipam"
 	"time"
 
 	kubeovnv1 "github.com/alauda/kube-ovn/pkg/apis/kubeovn/v1"
@@ -31,14 +32,14 @@ const controllerAgentName = "ovn-controller"
 type Controller struct {
 	config    *Configuration
 	ovnClient *ovs.Client
+	ipam      *ovnipam.IPAM
 
 	podsLister v1.PodLister
 	podsSynced cache.InformerSynced
 
-	addPodQueue       workqueue.RateLimitingInterface
-	addIpPoolPodQueue workqueue.RateLimitingInterface
-	deletePodQueue    workqueue.RateLimitingInterface
-	updatePodQueue    workqueue.RateLimitingInterface
+	addPodQueue    workqueue.RateLimitingInterface
+	deletePodQueue workqueue.RateLimitingInterface
+	updatePodQueue workqueue.RateLimitingInterface
 
 	subnetsLister           kubeovnlister.SubnetLister
 	subnetSynced            cache.InformerSynced
@@ -111,7 +112,8 @@ func NewController(config *Configuration) *Controller {
 
 	controller := &Controller{
 		config:    config,
-		ovnClient: ovs.NewClient(config.OvnNbHost, config.OvnNbPort, config.OvnNbTimeout, "", 0, config.ClusterRouter, config.ClusterTcpLoadBalancer, config.ClusterUdpLoadBalancer, config.NodeSwitch, config.NodeSwitchCIDR),
+		ovnClient: ovs.NewClient(config.OvnNbHost, config.OvnNbPort, config.OvnTimeout, config.OvnSbHost, config.OvnSbPort, config.ClusterRouter, config.ClusterTcpLoadBalancer, config.ClusterUdpLoadBalancer, config.NodeSwitch, config.NodeSwitchCIDR),
+		ipam:      ovnipam.NewIPAM(),
 
 		subnetsLister:           subnetInformer.Lister(),
 		subnetSynced:            subnetInformer.Informer().HasSynced,
@@ -124,12 +126,11 @@ func NewController(config *Configuration) *Controller {
 		ipsLister: ipInformer.Lister(),
 		ipSynced:  ipInformer.Informer().HasSynced,
 
-		podsLister:        podInformer.Lister(),
-		podsSynced:        podInformer.Informer().HasSynced,
-		addPodQueue:       workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "AddPod"),
-		addIpPoolPodQueue: workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "AddIpPoolPod"),
-		deletePodQueue:    workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "DeletePod"),
-		updatePodQueue:    workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "UpdatePod"),
+		podsLister:     podInformer.Lister(),
+		podsSynced:     podInformer.Informer().HasSynced,
+		addPodQueue:    workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "AddPod"),
+		deletePodQueue: workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "DeletePod"),
+		updatePodQueue: workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "UpdatePod"),
 
 		namespacesLister:  namespaceInformer.Lister(),
 		namespacesSynced:  namespaceInformer.Informer().HasSynced,
@@ -204,6 +205,7 @@ func NewController(config *Configuration) *Controller {
 
 	ipInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    controller.enqueueAddOrDelIP,
+		UpdateFunc: controller.enqueueUpdateIP,
 		DeleteFunc: controller.enqueueAddOrDelIP,
 	})
 
@@ -221,17 +223,21 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 	// wait for becoming a leader
 	c.leaderElection()
 
+	// Wait for the caches to be synced before starting workers
+	c.informerFactory.Start(stopCh)
+	c.kubeovnInformerFactory.Start(stopCh)
+
+	klog.Info("Waiting for informer caches to sync")
+	if ok := cache.WaitForCacheSync(stopCh, c.subnetSynced, c.ipSynced, c.podsSynced, c.namespacesSynced, c.nodesSynced, c.serviceSynced, c.endpointsSynced, c.npsSynced); !ok {
+		klog.Fatalf("failed to wait for caches to sync")
+	}
+
 	if err := c.InitOVN(); err != nil {
 		klog.Fatalf("failed to init ovn resource %v", err)
 	}
 
-	c.informerFactory.Start(stopCh)
-	c.kubeovnInformerFactory.Start(stopCh)
-
-	// Wait for the caches to be synced before starting workers
-	klog.Info("Waiting for informer caches to sync")
-	if ok := cache.WaitForCacheSync(stopCh, c.subnetSynced, c.ipSynced, c.podsSynced, c.namespacesSynced, c.nodesSynced, c.serviceSynced, c.endpointsSynced, c.npsSynced); !ok {
-		klog.Fatalf("failed to wait for caches to sync")
+	if err := c.InitIPAM(); err != nil {
+		klog.Fatalf("failed to init ipam %v", err)
 	}
 
 	// remove resources in ovndb that not exist any more in kubernetes resources
@@ -249,7 +255,6 @@ func (c *Controller) shutdown() {
 	utilruntime.HandleCrash()
 
 	c.addPodQueue.ShutDown()
-	c.addIpPoolPodQueue.ShutDown()
 	c.deletePodQueue.ShutDown()
 	c.updatePodQueue.ShutDown()
 
@@ -291,9 +296,6 @@ func (c *Controller) startWorkers(stopCh <-chan struct{}) {
 			break
 		}
 	}
-
-	// run in a single worker to avoid ip conflict
-	go wait.Until(c.runAddIpPoolPodWorker, time.Second, stopCh)
 
 	// run in a single worker to avoid subnet cidr conflict
 	go wait.Until(c.runAddNamespaceWorker, time.Second, stopCh)

@@ -156,7 +156,7 @@ spec:
       hostNetwork: true
       containers:
         - name: ovn-central
-          image: "index.alauda.cn/alaudak8s/kube-ovn:v1.1.0-pre"
+          image: "index.alauda.cn/alaudak8s/kube-ovn:v1.1.0"
           imagePullPolicy: IfNotPresent
           command: ["/kube-ovn/start-db.sh"]
           securityContext:
@@ -208,7 +208,7 @@ spec:
             periodSeconds: 7
             failureThreshold: 5
       nodeSelector:
-        beta.kubernetes.io/os: "linux"
+        kubernetes.io/os: "linux"
         kube-ovn/role: "master"
       volumes:
         - name: host-run-ovs
@@ -261,7 +261,7 @@ spec:
       hostPID: true
       containers:
         - name: openvswitch
-          image: "index.alauda.cn/alaudak8s/kube-ovn:v1.1.0-pre"
+          image: "index.alauda.cn/alaudak8s/kube-ovn:v1.1.0"
           imagePullPolicy: IfNotPresent
           command: ["/kube-ovn/start-ovs.sh"]
           securityContext:
@@ -311,7 +311,7 @@ spec:
               cpu: 1000m
               memory: 800Mi
       nodeSelector:
-        beta.kubernetes.io/os: "linux"
+        kubernetes.io/os: "linux"
       volumes:
         - name: host-modules
           hostPath:

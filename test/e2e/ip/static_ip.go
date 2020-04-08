@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"os"
+	"time"
 )
 
 var _ = Describe("[IP Allocation]", func() {
@@ -34,7 +35,7 @@ var _ = Describe("[IP Allocation]", func() {
 					Containers: []corev1.Container{
 						{
 							Name:            name,
-							Image:           "index.alauda.cn/library/nginx:alpine",
+							Image:           "index.alauda.cn/claas/pause:3.1",
 							ImagePullPolicy: corev1.PullIfNotPresent,
 						},
 					},
@@ -52,7 +53,9 @@ var _ = Describe("[IP Allocation]", func() {
 			pod, err = f.KubeClientSet.CoreV1().Pods(namespace).Get(name, metav1.GetOptions{})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(pod.Annotations[util.AllocatedAnnotation]).To(Equal("true"))
+			Expect(pod.Annotations[util.RoutedAnnotation]).To(Equal("true"))
 
+			time.Sleep(1 * time.Second)
 			ip, err := f.OvnClientSet.KubeovnV1().IPs().Get(fmt.Sprintf("%s.%s", name, namespace), metav1.GetOptions{})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(ip.Spec.IPAddress).To(Equal("12.10.0.10"))
@@ -82,7 +85,7 @@ var _ = Describe("[IP Allocation]", func() {
 							Containers: []corev1.Container{
 								{
 									Name:            name,
-									Image:           "index.alauda.cn/library/nginx:alpine",
+									Image:           "index.alauda.cn/claas/pause:3.1",
 									ImagePullPolicy: corev1.PullIfNotPresent,
 								},
 							},
@@ -128,14 +131,14 @@ var _ = Describe("[IP Allocation]", func() {
 						ObjectMeta: metav1.ObjectMeta{
 							Labels: map[string]string{"apps": name},
 							Annotations: map[string]string{
-								util.IpPoolAnnotation: "12.10.0.30, 12.10.0.31, 12.10.0.32",
+								util.IpPoolAnnotation: "12.10.0.31, 12.10.0.32, 12.10.0.30",
 							},
 						},
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{
 								{
 									Name:            name,
-									Image:           "index.alauda.cn/library/nginx:alpine",
+									Image:           "index.alauda.cn/claas/pause:3.1",
 									ImagePullPolicy: corev1.PullIfNotPresent,
 								},
 							},
@@ -155,7 +158,7 @@ var _ = Describe("[IP Allocation]", func() {
 			for i := 0; i < 3; i++ {
 				pod, err := f.KubeClientSet.CoreV1().Pods(namespace).Get(fmt.Sprintf("%s-%d", name, i), metav1.GetOptions{})
 				Expect(err).NotTo(HaveOccurred())
-				Expect(pod.Status.PodIP).To(Equal([]string{"12.10.0.30", "12.10.0.31", "12.10.0.32"}[i]))
+				Expect(pod.Status.PodIP).To(Equal([]string{"12.10.0.31", "12.10.0.32", "12.10.0.30"}[i]))
 			}
 		})
 	})
