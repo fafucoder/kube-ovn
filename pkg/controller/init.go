@@ -69,8 +69,10 @@ func (c *Controller) initDefaultLogicalSwitch() error {
 			NatOutgoing: true,
 			GatewayType: kubeovnv1.GWDistributedType,
 			Protocol:    util.CheckProtocol(c.config.DefaultCIDR),
-			Vlan:        c.config.DefaultVlanName,
 		},
+	}
+	if c.config.NetworkType == util.NetworkTypeVlan {
+		defaultSubnet.Spec.Vlan = c.config.DefaultVlanName
 	}
 
 	_, err = c.config.KubeOvnClient.KubeovnV1().Subnets().Create(&defaultSubnet)
@@ -98,11 +100,13 @@ func (c *Controller) initNodeSwitch() error {
 			Gateway:    c.config.NodeSwitchGateway,
 			ExcludeIps: []string{c.config.NodeSwitchGateway},
 			Protocol:   util.CheckProtocol(c.config.NodeSwitchCIDR),
-			Vlan:       c.config.DefaultVlanName,
 		},
 	}
-	_, err = c.config.KubeOvnClient.KubeovnV1().Subnets().Create(&nodeSubnet)
+	if c.config.NetworkType == util.NetworkTypeVlan {
+		nodeSubnet.Spec.Vlan = c.config.DefaultVlanName
+	}
 
+	_, err = c.config.KubeOvnClient.KubeovnV1().Subnets().Create(&nodeSubnet)
 	return err
 }
 
